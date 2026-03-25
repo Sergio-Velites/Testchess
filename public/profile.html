@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Perfil — ChessMate</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+<nav class="navbar">
+  <a class="brand" href="/">♟ ChessMate</a>
+  <div class="nav-links">
+    <a href="/lobby.html">Jugar</a>
+    <a href="#" id="navLogout">Salir</a>
+  </div>
+</nav>
+
+<div class="container" style="padding-top:2rem;padding-bottom:3rem">
+  <div id="alertBox"></div>
+
+  <!-- Profile header -->
+  <div class="card" style="display:flex;align-items:center;gap:1.2rem;margin-bottom:1.5rem;flex-wrap:wrap">
+    <div style="width:64px;height:64px;border-radius:50%;background:var(--accent);
+         display:flex;align-items:center;justify-content:center;font-size:1.8rem;flex-shrink:0">
+      ♟
+    </div>
+    <div>
+      <h1 id="profileUsername" style="font-size:1.6rem;font-weight:800">—</h1>
+      <div style="color:var(--text-muted);font-size:.85rem" id="profileEmail">—</div>
+      <div style="color:var(--text-muted);font-size:.8rem;margin-top:.2rem" id="profileJoined">—</div>
+    </div>
+    <div style="margin-left:auto">
+      <button class="btn btn-secondary" id="btnEditUsername">✏️ Cambiar nombre</button>
+    </div>
+  </div>
+
+  <!-- Edit username -->
+  <div id="editUsernameCard" class="card" style="display:none;margin-bottom:1.5rem;max-width:400px">
+    <h3 style="margin-bottom:1rem">Cambiar nombre de usuario</h3>
+    <div class="form-group">
+      <label>Nuevo nombre</label>
+      <input type="text" id="newUsername" maxlength="24" placeholder="NuevoNombre">
+    </div>
+    <div style="display:flex;gap:.5rem">
+      <button class="btn btn-primary" id="btnSaveUsername">Guardar</button>
+      <button class="btn btn-secondary" id="btnCancelEdit">Cancelar</button>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats-grid">
+    <div class="stat-card wins">
+      <div class="stat-value" id="statWins">0</div>
+      <div class="stat-label">Victorias</div>
+    </div>
+    <div class="stat-card losses">
+      <div class="stat-value" id="statLosses">0</div>
+      <div class="stat-label">Derrotas</div>
+    </div>
+    <div class="stat-card draws">
+      <div class="stat-value" id="statDraws">0</div>
+      <div class="stat-label">Tablas</div>
+    </div>
+  </div>
+
+  <!-- Win rate bar -->
+  <div class="card" style="margin-bottom:1.5rem">
+    <div style="display:flex;justify-content:space-between;font-size:.85rem;
+         color:var(--text-muted);margin-bottom:.5rem">
+      <span>Ratio de victorias</span>
+      <span id="winRatePct">—</span>
+    </div>
+    <div style="height:8px;background:var(--border);border-radius:4px;overflow:hidden">
+      <div id="winRateBar" style="height:100%;background:var(--success);width:0%;transition:width .5s"></div>
+    </div>
+  </div>
+
+  <!-- Game history -->
+  <h2 style="margin-bottom:1rem">Historial de partidas</h2>
+
+  <div style="display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap">
+    <button class="btn btn-secondary btn-filter active" data-filter="all">Todas</button>
+    <button class="btn btn-secondary btn-filter" data-filter="active">Activas</button>
+    <button class="btn btn-secondary btn-filter" data-filter="checkmate">Finalizadas</button>
+    <button class="btn btn-secondary btn-filter" data-filter="draw">Tablas</button>
+  </div>
+
+  <div id="gamesList">
+    <p style="color:var(--text-muted)">Cargando…</p>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script type="module">
+  import sb from '/js/supabase-client.js';
+  import { toast, requireAuth, getMyProfile, fmtDate } from '/js/utils.js';
+
+  requireAuth(sb);
+
+  let myProfile = null;
+  let allGames  = [];
+
+  async function init() {
+    myProfile = await getMyProfile(sb);
+    if (!myProfile) { window.location.href = '/'; return; }
+
+    document.getElementById('profileUsername').textContent = myProfile.username;
+    document.getElementById('profileEmail').textContent    = myProfile.email;
+    document.getElementById('profileJoined').textContent   = 'Miembro desde ' + fmtDate(myProfile.created_at);
+    document.getElementById('newUsername').value           = myProfile.username;
+
+    document.getElementById('statWins').textContent   = myProfile.wins;
+    document.getElementById('statLosses').textContent = myProfile.losses;
+    document.getElementById('statDraws').textContent  = myProfile.draws;
+
+    const total = myProfile.wins + myProfile.losses + myProfile.draws;
+    const pct   = total > 0 ? Math.round((myProfile.wins / total) * 100) : 0;
+    document.getElementById('winRatePct').textContent    = `${pct}%`;
+    document.getElementById('winRateBar').style.width    = `${pct}%`;
+
+    loadGames('all');
+  }
+
+  async function loadGames(filter) {
+    let query = sb.from('games')
+      .select(`
+        id, status, created_at, updated_at, winner_id,
+        white:white_player_id(id,username),
+        black:black_player_id(id,username)
+      `)
+      .or(`white_player_id.eq.${myProfile.id},black_player_id.eq.${myProfile.id}`)
+      .order('updated_at', { ascending: false })
+      .limit(50);
+
+    if (filter !== 'all') query = query.eq('status', filter);
+
+    const { data: games } = await query;
+    allGames = games || [];
+    renderGames(allGames);
+  }
+
+  function renderGames(games) {
+    const el = document.getElementById('gamesList');
+    if (!games.length) {
+      el.innerHTML = '<p style="color:var(--text-muted)">Sin partidas en esta categoría.</p>';
+      return;
+    }
+
+    el.innerHTML = '<div class="games-list">' + games.map(g => {
+      const iAmWhite  = g.white?.id === myProfile.id;
+      const myColor   = iAmWhite ? '♔' : '♚';
+      const opponent  = iAmWhite ? (g.black?.username || 'Sin rival') : (g.white?.username || 'Sin rival');
+      const result    = g.status === 'checkmate'
+        ? (g.winner_id === myProfile.id ? '<span style="color:var(--success)">Victoria</span>' : '<span style="color:var(--danger)">Derrota</span>')
+        : g.status === 'draw' ? '<span style="color:var(--text-muted)">Tablas</span>'
+        : `<span class="badge badge-${g.status === 'waiting' ? 'waiting' : 'active'}">${g.status}</span>`;
+
+      return `<div class="game-item" onclick="window.location='/game.html?id=${g.id}'">
+        <span>${myColor} vs ${opponent}</span>
+        <span style="display:flex;align-items:center;gap:.75rem">
+          ${result}
+          <span style="color:var(--text-muted);font-size:.8rem">${fmtDate(g.updated_at)}</span>
+        </span>
+      </div>`;
+    }).join('') + '</div>';
+  }
+
+  // ── Filter buttons ──────────────────────────────────────────
+  document.querySelectorAll('.btn-filter').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.btn-filter').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      loadGames(btn.dataset.filter);
+    });
+  });
+
+  // ── Edit username ────────────────────────────────────────────
+  document.getElementById('btnEditUsername').addEventListener('click', () => {
+    document.getElementById('editUsernameCard').style.display = '';
+  });
+  document.getElementById('btnCancelEdit').addEventListener('click', () => {
+    document.getElementById('editUsernameCard').style.display = 'none';
+  });
+  document.getElementById('btnSaveUsername').addEventListener('click', async () => {
+    const newName = document.getElementById('newUsername').value.trim();
+    if (!newName) { toast('Introduce un nombre', 'error'); return; }
+    const { error } = await sb.from('users')
+      .update({ username: newName })
+      .eq('id', myProfile.id);
+    if (error) { toast(error.message, 'error'); return; }
+    myProfile.username = newName;
+    document.getElementById('profileUsername').textContent = newName;
+    document.getElementById('editUsernameCard').style.display = 'none';
+    toast('¡Nombre actualizado!', 'success');
+  });
+
+  // ── Logout ──────────────────────────────────────────────────
+  document.getElementById('navLogout').addEventListener('click', async (e) => {
+    e.preventDefault();
+    await sb.auth.signOut();
+    window.location.href = '/';
+  });
+
+  init();
+</script>
+</body>
+</html>

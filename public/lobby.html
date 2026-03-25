@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lobby — ChessMate</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+<nav class="navbar">
+  <a class="brand" href="/">♟ ChessMate</a>
+  <div class="nav-links">
+    <a href="/profile.html">Mi Perfil</a>
+    <a href="#" id="navLogout">Salir</a>
+  </div>
+</nav>
+
+<div class="container" style="padding-top:2rem">
+  <h1 class="page-title">Sala de juego</h1>
+  <div id="alertBox"></div>
+
+  <div class="lobby-grid">
+
+    <!-- Create game -->
+    <div class="card">
+      <h2 style="margin-bottom:1rem">Crear partida</h2>
+      <p style="color:var(--text-muted);font-size:.9rem;margin-bottom:1.2rem">
+        Elige tu color y obtén un código para compartir con tu rival.
+      </p>
+      <div class="form-group">
+        <label>Jugar como</label>
+        <select id="colorChoice">
+          <option value="white">Blancas ♔</option>
+          <option value="black">Negras ♚</option>
+          <option value="random">Aleatorio</option>
+        </select>
+      </div>
+      <button id="btnCreate" class="btn btn-primary btn-block">Crear partida</button>
+
+      <div id="createdGame" style="display:none;margin-top:1.2rem">
+        <p style="font-size:.85rem;color:var(--text-muted);margin-bottom:.6rem">Código de invitación (clic para copiar):</p>
+        <div class="invite-code-display" id="inviteCodeDisplay">
+          ——
+          <small>Comparte este código con tu rival</small>
+        </div>
+        <a id="btnGoGame" href="#" class="btn btn-success btn-block" style="margin-top:.9rem">Ir al tablero →</a>
+      </div>
+    </div>
+
+    <!-- Join game -->
+    <div class="card">
+      <h2 style="margin-bottom:1rem">Unirse a partida</h2>
+      <p style="color:var(--text-muted);font-size:.9rem;margin-bottom:1.2rem">
+        Introduce el código que te envió tu rival.
+      </p>
+      <div class="form-group">
+        <label>Código de invitación</label>
+        <input type="text" id="joinCode" placeholder="ej. a3f9b2c1" maxlength="8"
+               style="text-transform:uppercase;letter-spacing:.15rem;font-size:1.1rem">
+      </div>
+      <button id="btnJoin" class="btn btn-secondary btn-block">Unirse</button>
+    </div>
+
+  </div>
+
+  <!-- Active games -->
+  <div style="margin-top:2rem">
+    <h2 style="margin-bottom:1rem">Mis partidas activas</h2>
+    <div id="activeGames">
+      <p style="color:var(--text-muted)">Cargando…</p>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script type="module">
+  import sb from '/js/supabase-client.js';
+  import { toast, copyToClipboard, requireAuth, getMyProfile, fmtDate } from '/js/utils.js';
+
+  requireAuth(sb);
+
+  let myProfile = null;
+
+  async function init() {
+    myProfile = await getMyProfile(sb);
+    if (!myProfile) { window.location.href = '/'; return; }
+    loadActiveGames();
+  }
+  init();
+
+  // ── Logout ─────────────────────────────────────────────────
+  document.getElementById('navLogout').addEventListener('click', async (e) => {
+    e.preventDefault();
+    await sb.auth.signOut();
+    window.location.href = '/';
+  });
+
+  function showAlert(msg, type = 'error') {
+    document.getElementById('alertBox').innerHTML =
+      `<div class="alert alert-${type}">${msg}</div>`;
+  }
+
+  // ── Create game ────────────────────────────────────────────
+  document.getElementById('btnCreate').addEventListener('click', async () => {
+    const colorPref = document.getElementById('colorChoice').value;
+    const btn = document.getElementById('btnCreate');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Creando…';
+
+    let whiteId = null, blackId = null;
+    const coin = Math.random() < .5;
+    if (colorPref === 'white' || (colorPref === 'random' && coin)) {
+      whiteId = myProfile.id;
+    } else {
+      blackId = myProfile.id;
+    }
+
+    const { data, error } = await sb.from('games')
+      .insert({ white_player_id: whiteId, black_player_id: blackId, status: 'waiting' })
+      .select()
+      .single();
+
+    btn.disabled = false;
+    btn.textContent = 'Crear partida';
+
+    if (error) { showAlert(error.message); return; }
+
+    document.getElementById('inviteCodeDisplay').childNodes[0].textContent = data.invite_code;
+    document.getElementById('createdGame').style.display = '';
+    document.getElementById('btnGoGame').href = `/game.html?id=${data.id}`;
+
+    document.getElementById('inviteCodeDisplay').addEventListener('click', async () => {
+      await copyToClipboard(data.invite_code);
+      toast('¡Código copiado!', 'success');
+    });
+    loadActiveGames();
+  });
+
+  // ── Join game ──────────────────────────────────────────────
+  document.getElementById('btnJoin').addEventListener('click', async () => {
+    const code = document.getElementById('joinCode').value.trim().toLowerCase();
+    if (!code) { showAlert('Introduce un código'); return; }
+    const btn = document.getElementById('btnJoin');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>';
+
+    const { data: game, error } = await sb.from('games')
+      .select('*')
+      .eq('invite_code', code)
+      .single();
+
+    btn.disabled = false;
+    btn.textContent = 'Unirse';
+
+    if (error || !game) { showAlert('Código no encontrado'); return; }
+    if (game.status !== 'waiting') { showAlert('Esta partida ya no acepta jugadores'); return; }
+
+    // Assign the joining player to the empty color slot
+    let updateObj = {};
+    if (!game.white_player_id) {
+      updateObj.white_player_id = myProfile.id;
+    } else if (!game.black_player_id) {
+      updateObj.black_player_id = myProfile.id;
+    } else {
+      showAlert('La partida ya está llena'); return;
+    }
+    updateObj.status = 'active';
+
+    const { error: upErr } = await sb.from('games')
+      .update(updateObj)
+      .eq('id', game.id);
+
+    if (upErr) { showAlert(upErr.message); return; }
+    window.location.href = `/game.html?id=${game.id}`;
+  });
+
+  // ── Load active games ──────────────────────────────────────
+  async function loadActiveGames() {
+    if (!myProfile) return;
+    const { data: games } = await sb.from('games')
+      .select(`
+        id, invite_code, status, created_at,
+        white:white_player_id(username),
+        black:black_player_id(username)
+      `)
+      .or(`white_player_id.eq.${myProfile.id},black_player_id.eq.${myProfile.id}`)
+      .in('status', ['waiting','active','paused','check'])
+      .order('updated_at', { ascending: false })
+      .limit(10);
+
+    const el = document.getElementById('activeGames');
+    if (!games || games.length === 0) {
+      el.innerHTML = '<p style="color:var(--text-muted)">No hay partidas activas.</p>';
+      return;
+    }
+    el.innerHTML = '<div class="games-list">' +
+      games.map(g => {
+        const white = g.white?.username || '(esperando)';
+        const black = g.black?.username || '(esperando)';
+        const badgeClass = g.status === 'waiting' ? 'badge-waiting' : 'badge-active';
+        return `<div class="game-item" onclick="window.location='/game.html?id=${g.id}'">
+          <span>♔ ${white} vs ♚ ${black}</span>
+          <span>
+            <span class="badge ${badgeClass}">${g.status}</span>
+            &nbsp;${fmtDate(g.created_at)}
+          </span>
+        </div>`;
+      }).join('') + '</div>';
+  }
+</script>
+</body>
+</html>

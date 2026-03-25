@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChessMate — Ajedrez Multijugador</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+<!-- Navbar -->
+<nav class="navbar">
+  <span class="brand">♟ ChessMate</span>
+  <div class="nav-links" id="navLinks">
+    <a href="/profile.html" id="navProfile" style="display:none">Mi Perfil</a>
+    <a href="/lobby.html"   id="navLobby"   style="display:none">Jugar</a>
+    <a href="#" id="navLogout" style="display:none">Salir</a>
+  </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+  <h1>Juega al ajedrez<br><span>en tiempo real</span></h1>
+  <p>Crea una partida, comparte el enlace y juega con cualquier persona desde cualquier dispositivo.</p>
+  <div class="cta-group" id="ctaGuest">
+    <a href="#auth" class="btn btn-primary">Empezar a jugar</a>
+  </div>
+  <div class="cta-group" id="ctaLoggedIn" style="display:none">
+    <a href="/lobby.html" class="btn btn-primary">Crear partida</a>
+    <a href="/profile.html" class="btn btn-secondary">Mi perfil</a>
+  </div>
+</section>
+
+<!-- Auth card -->
+<section class="container" id="auth">
+  <div class="card" style="max-width:420px;margin:0 auto">
+    <div id="alertBox"></div>
+
+    <div class="auth-tabs">
+      <div class="auth-tab active" data-tab="login">Iniciar sesión</div>
+      <div class="auth-tab" data-tab="signup">Registrarse</div>
+    </div>
+
+    <!-- Login -->
+    <form id="loginForm">
+      <div class="form-group">
+        <label>Correo electrónico</label>
+        <input type="email" id="loginEmail" placeholder="tu@email.com" required>
+      </div>
+      <div class="form-group">
+        <label>Contraseña</label>
+        <input type="password" id="loginPassword" placeholder="••••••••" required>
+      </div>
+      <button type="submit" class="btn btn-primary btn-block">Entrar</button>
+    </form>
+
+    <!-- Sign-up -->
+    <form id="signupForm" style="display:none">
+      <div class="form-group">
+        <label>Nombre de usuario</label>
+        <input type="text" id="signupUsername" placeholder="GrandMaster99" required maxlength="24">
+      </div>
+      <div class="form-group">
+        <label>Correo electrónico</label>
+        <input type="email" id="signupEmail" placeholder="tu@email.com" required>
+      </div>
+      <div class="form-group">
+        <label>Contraseña</label>
+        <input type="password" id="signupPassword" placeholder="mín. 6 caracteres" required minlength="6">
+      </div>
+      <button type="submit" class="btn btn-primary btn-block">Crear cuenta</button>
+    </form>
+  </div>
+</section>
+
+<!-- Features -->
+<section class="container" style="padding-top:3rem;padding-bottom:3rem">
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1.2rem">
+    <div class="card" style="text-align:center">
+      <div style="font-size:2.5rem;margin-bottom:.5rem">⚡</div>
+      <h3>Tiempo real</h3>
+      <p style="color:var(--text-muted);font-size:.9rem;margin-top:.4rem">Cada movimiento aparece al instante gracias a WebSockets.</p>
+    </div>
+    <div class="card" style="text-align:center">
+      <div style="font-size:2.5rem;margin-bottom:.5rem">📱</div>
+      <h3>Apto para móvil</h3>
+      <p style="color:var(--text-muted);font-size:.9rem;margin-top:.4rem">Tablero táctil, diseño responsive para cualquier pantalla.</p>
+    </div>
+    <div class="card" style="text-align:center">
+      <div style="font-size:2.5rem;margin-bottom:.5rem">💾</div>
+      <h3>Partidas persistentes</h3>
+      <p style="color:var(--text-muted);font-size:.9rem;margin-top:.4rem">Pausa y retoma la partida cuando quieras.</p>
+    </div>
+    <div class="card" style="text-align:center">
+      <div style="font-size:2.5rem;margin-bottom:.5rem">📊</div>
+      <h3>Estadísticas</h3>
+      <p style="color:var(--text-muted);font-size:.9rem;margin-top:.4rem">Historial completo con notación algebraica.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Supabase JS CDN -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script type="module">
+  import sb from '/js/supabase-client.js';
+  import { toast, ensureProfile } from '/js/utils.js';
+
+  // ── Tab switching ──────────────────────────────────────────
+  document.querySelectorAll('.auth-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.auth-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      const which = tab.dataset.tab;
+      document.getElementById('loginForm').style.display  = which === 'login'  ? '' : 'none';
+      document.getElementById('signupForm').style.display = which === 'signup' ? '' : 'none';
+    });
+  });
+
+  function showAlert(msg, type = 'error') {
+    const box = document.getElementById('alertBox');
+    box.innerHTML = `<div class="alert alert-${type}">${msg}</div>`;
+  }
+
+  // ── Check session ──────────────────────────────────────────
+  async function checkSession() {
+    const { data: { session } } = await sb.auth.getSession();
+    if (session) {
+      document.getElementById('ctaGuest').style.display    = 'none';
+      document.getElementById('ctaLoggedIn').style.display = '';
+      document.getElementById('auth').style.display        = 'none';
+      document.getElementById('navProfile').style.display  = '';
+      document.getElementById('navLobby').style.display    = '';
+      document.getElementById('navLogout').style.display   = '';
+    }
+  }
+  checkSession();
+
+  // ── Logout ─────────────────────────────────────────────────
+  document.getElementById('navLogout').addEventListener('click', async (e) => {
+    e.preventDefault();
+    await sb.auth.signOut();
+    window.location.reload();
+  });
+
+  // ── Login ──────────────────────────────────────────────────
+  document.getElementById('loginForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email    = document.getElementById('loginEmail').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    const btn = e.target.querySelector('button');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>';
+
+    const { data, error } = await sb.auth.signInWithPassword({ email, password });
+    if (error) {
+      showAlert(error.message);
+      btn.disabled = false;
+      btn.textContent = 'Entrar';
+      return;
+    }
+    await ensureProfile(sb, data.user);
+    window.location.href = '/lobby.html';
+  });
+
+  // ── Sign-up ────────────────────────────────────────────────
+  document.getElementById('signupForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const username = document.getElementById('signupUsername').value.trim();
+    const email    = document.getElementById('signupEmail').value.trim();
+    const password = document.getElementById('signupPassword').value;
+    const btn = e.target.querySelector('button');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>';
+
+    const { data, error } = await sb.auth.signUp({ email, password });
+    if (error) {
+      showAlert(error.message);
+      btn.disabled = false;
+      btn.textContent = 'Crear cuenta';
+      return;
+    }
+    if (data.user) {
+      await ensureProfile(sb, data.user, username);
+    }
+    showAlert('¡Cuenta creada! Revisa tu correo para confirmar.', 'success');
+    btn.disabled = false;
+    btn.textContent = 'Crear cuenta';
+  });
+</script>
+</body>
+</html>

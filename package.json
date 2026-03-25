@@ -1,0 +1,12 @@
+{
+  "name": "chessmate",
+  "version": "1.0.0",
+  "description": "Multiplayer chess app with Supabase Realtime and Vercel",
+  "private": true,
+  "dependencies": {
+    "@supabase/supabase-js": "^2.43.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

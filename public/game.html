@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Partida — ChessMate</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <!-- chessboard.js CSS -->
+  <link rel="stylesheet"
+        href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+</head>
+<body>
+
+<nav class="navbar">
+  <a class="brand" href="/">♟ ChessMate</a>
+  <div class="nav-links">
+    <a href="/lobby.html">Lobby</a>
+    <a href="/profile.html">Perfil</a>
+    <span id="navInvite" style="cursor:pointer;color:var(--text-muted);font-size:.85rem"></span>
+  </div>
+</nav>
+
+<div class="container" style="padding-top:1rem;padding-bottom:2rem">
+  <div id="alertBox" style="margin-bottom:.75rem"></div>
+
+  <!-- Status bar -->
+  <div class="status-bar" id="statusBar">Cargando partida…</div>
+
+  <div class="game-layout" style="margin-top:.75rem">
+
+    <!-- Board side -->
+    <div class="board-wrapper">
+      <!-- Opponent strip -->
+      <div class="player-strip" id="opponentStrip">
+        <span class="player-name" id="opponentName">Esperando rival…</span>
+        <span id="opponentDot" style="display:none" class="turn-dot"></span>
+      </div>
+
+      <div id="board"></div>
+
+      <!-- My strip -->
+      <div class="player-strip" id="myStrip">
+        <span class="player-name" id="myName">—</span>
+        <span id="myDot" style="display:none" class="turn-dot"></span>
+      </div>
+
+      <!-- Promotion modal -->
+      <div id="promoModal" style="display:none;background:var(--surface);border:1px solid var(--border);
+           border-radius:8px;padding:.75rem;text-align:center;margin-top:.5rem">
+        <p style="font-size:.85rem;color:var(--text-muted);margin-bottom:.5rem">Promoción — elige pieza:</p>
+        <div style="display:flex;gap:.5rem;justify-content:center">
+          <button class="btn btn-secondary" onclick="choosePromo('q')">♛ Dama</button>
+          <button class="btn btn-secondary" onclick="choosePromo('r')">♜ Torre</button>
+          <button class="btn btn-secondary" onclick="choosePromo('b')">♝ Alfil</button>
+          <button class="btn btn-secondary" onclick="choosePromo('n')">♞ Caballo</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sidebar -->
+    <div>
+      <!-- Move history -->
+      <div class="move-history" id="moveHistory">
+        <h3>Historial de movimientos</h3>
+        <table class="move-table" id="moveTable">
+          <tbody id="moveTbody"></tbody>
+        </table>
+      </div>
+
+      <!-- Game actions -->
+      <div style="margin-top:.75rem;display:flex;flex-direction:column;gap:.5rem">
+        <button class="btn btn-secondary" id="btnInvite">📋 Copiar código</button>
+        <button class="btn btn-secondary" id="btnPause" style="display:none">⏸ Pausar</button>
+        <button class="btn btn-danger"    id="btnResign" style="display:none">🏳 Rendirse</button>
+      </div>
+
+      <!-- Game info -->
+      <div class="card" style="margin-top:.75rem;font-size:.85rem;color:var(--text-muted)">
+        <div style="margin-bottom:.35rem">🆔 <span id="gameIdShort">—</span></div>
+        <div>📅 <span id="gameDate">—</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Libraries -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://unpkg.com/jquery@3.7.1/dist/jquery.min.js"></script>
+<script src="https://unpkg.com/chess.js@0.13.4/chess.min.js"></script>
+<script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+
+<script type="module">
+  import sb from '/js/supabase-client.js';
+  import { toast, copyToClipboard, fmtDate } from '/js/utils.js';
+
+  // ── State ───────────────────────────────────────────────────
+  const params   = new URLSearchParams(location.search);
+  const GAME_ID  = params.get('id');
+  if (!GAME_ID) { window.location.href = '/lobby.html'; }
+
+  let chess       = new Chess();
+  let board       = null;
+  let myProfile   = null;
+  let myColor     = null;   // 'white' | 'black' | 'spectator'
+  let gameData    = null;
+  let pendingMove = null;   // {from, to} waiting for promo choice
+
+  // ── Init ────────────────────────────────────────────────────
+  async function init() {
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) { window.location.href = '/'; return; }
+
+    // Load my profile
+    const { data: prof } = await sb.from('users')
+      .select('*').eq('auth_id', session.user.id).single();
+    myProfile = prof;
+
+    // Load game
+    await loadGame();
+
+    // Subscribe to realtime changes
+    sb.channel(`game:${GAME_ID}`)
+      .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'games', filter: `id=eq.${GAME_ID}` },
+          (payload) => handleGameUpdate(payload.new))
+      .on('postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'moves', filter: `game_id=eq.${GAME_ID}` },
+          (payload) => handleNewMove(payload.new))
+      .subscribe();
+  }
+
+  // ── Load game ───────────────────────────────────────────────
+  async function loadGame() {
+    const { data: g, error } = await sb.from('games')
+      .select(`
+        *,
+        white:white_player_id(id,username),
+        black:black_player_id(id,username)
+      `)
+      .eq('id', GAME_ID)
+      .single();
+
+    if (error || !g) {
+      document.getElementById('alertBox').innerHTML =
+        '<div class="alert alert-error">Partida no encontrada.</div>';
+      return;
+    }
+
+    gameData = g;
+    chess.load(g.current_fen);
+
+    // Determine my color
+    if (myProfile) {
+      if (g.white?.id === myProfile.id) myColor = 'white';
+      else if (g.black?.id === myProfile.id) myColor = 'black';
+      else myColor = 'spectator';
+    } else {
+      myColor = 'spectator';
+    }
+
+    // Init board
+    const orientation = myColor === 'black' ? 'black' : 'white';
+    if (!board) {
+      board = Chessboard('board', {
+        position:     g.current_fen,
+        orientation,
+        draggable:    myColor !== 'spectator',
+        onDragStart,
+        onDrop,
+        onSnapEnd:    () => board.position(chess.fen()),
+        pieceTheme:   'https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/img/chesspieces/wikipedia/{piece}.png'
+      });
+      $(window).on('resize', () => board.resize());
+    } else {
+      board.position(g.current_fen, false);
+    }
+
+    // Load existing moves
+    const { data: moves } = await sb.from('moves')
+      .select('*').eq('game_id', GAME_ID)
+      .order('move_number', { ascending: true });
+    if (moves) renderMoveHistory(moves);
+
+    // Update UI
+    updateUI();
+
+    // Show invite code in nav
+    document.getElementById('navInvite').textContent = `Código: ${g.invite_code}`;
+    document.getElementById('gameIdShort').textContent = GAME_ID.slice(0,8) + '…';
+    document.getElementById('gameDate').textContent = fmtDate(g.created_at);
+    document.getElementById('myName').textContent =
+      myColor === 'white' ? (g.white?.username || '—') :
+      myColor === 'black' ? (g.black?.username || '—') : 'Espectador';
+
+    // Show action buttons
+    if (myColor !== 'spectator' && ['active','check'].includes(g.status)) {
+      document.getElementById('btnPause').style.display  = '';
+      document.getElementById('btnResign').style.display = '';
+    }
+  }
+
+  // ── Board event handlers ─────────────────────────────────────
+  function onDragStart(source, piece) {
+    if (!gameData) return false;
+    const status = gameData.status;
+    if (!['active','check'].includes(status)) return false;
+    if (myColor === 'spectator') return false;
+    const turn = chess.turn() === 'w' ? 'white' : 'black';
+    if (myColor !== turn) return false;
+    if ((myColor === 'white' && piece.startsWith('b')) ||
+        (myColor === 'black' && piece.startsWith('w'))) return false;
+    return true;
+  }
+
+  function onDrop(source, target) {
+    if (source === target) return 'snapback';
+
+    // Try promotion
+    const piece = chess.get(source);
+    const isPromo = piece && piece.type === 'p' &&
+      ((piece.color === 'w' && target[1] === '8') ||
+       (piece.color === 'b' && target[1] === '1'));
+
+    if (isPromo) {
+      // Show promotion dialog, defer move
+      pendingMove = { from: source, to: target };
+      document.getElementById('promoModal').style.display = '';
+      return 'snapback';
+    }
+
+    return attemptMove(source, target, null);
+  }
+
+  window.choosePromo = function(piece) {
+    document.getElementById('promoModal').style.display = 'none';
+    if (pendingMove) {
+      attemptMove(pendingMove.from, pendingMove.to, piece);
+      pendingMove = null;
+    }
+  };
+
+  function attemptMove(from, to, promotion) {
+    const moveObj = { from, to };
+    if (promotion) moveObj.promotion = promotion;
+
+    const result = chess.move(moveObj);
+    if (!result) return 'snapback';
+
+    board.position(chess.fen());
+    sendMove(result);
+    return undefined;
+  }
+
+  // ── Send move to Supabase ────────────────────────────────────
+  async function sendMove(moveResult) {
+    const movesCount = chess.history().length;
+    const fen = chess.fen();
+
+    // Determine game status
+    let newStatus = 'active';
+    if (chess.in_checkmate()) newStatus = 'checkmate';
+    else if (chess.in_draw() || chess.in_stalemate() ||
+             chess.in_threefold_repetition() || chess.insufficient_material()) newStatus = 'draw';
+    else if (chess.in_check()) newStatus = 'check';
+
+    const uci = moveResult.from + moveResult.to + (moveResult.promotion || '');
+
+    // Insert move
+    await sb.from('moves').insert({
+      game_id:     GAME_ID,
+      player_id:   myProfile.id,
+      move_san:    moveResult.san,
+      move_uci:    uci,
+      fen_after:   fen,
+      move_number: movesCount
+    });
+
+    // Update game
+    const updateObj = { current_fen: fen, status: newStatus };
+    if (newStatus === 'checkmate') {
+      updateObj.winner_id = myProfile.id;
+    }
+    await sb.from('games').update(updateObj).eq('id', GAME_ID);
+  }
+
+  // ── Realtime handlers ────────────────────────────────────────
+  function handleGameUpdate(newGame) {
+    if (!newGame) return;
+    gameData = { ...gameData, ...newGame };
+    chess.load(newGame.current_fen);
+    board.position(newGame.current_fen, false);
+    updateUI();
+  }
+
+  function handleNewMove(move) {
+    // Refresh move history row
+    appendMoveRow(move);
+    // Auto-scroll history
+    const hist = document.getElementById('moveHistory');
+    hist.scrollTop = hist.scrollHeight;
+  }
+
+  // ── UI update ────────────────────────────────────────────────
+  function updateUI() {
+    if (!gameData) return;
+    const s = gameData.status;
+    const bar = document.getElementById('statusBar');
+    bar.className = 'status-bar';
+
+    const turn = chess.turn() === 'w' ? 'white' : 'black';
+    const whiteName = gameData.white?.username || 'Blancas';
+    const blackName = gameData.black?.username || 'Negras';
+
+    if (s === 'waiting') {
+      bar.textContent = '⏳ Esperando a que se una el segundo jugador…';
+    } else if (s === 'checkmate') {
+      bar.textContent = `♚ Jaque mate — ganador: ${gameData.winner_id === myProfile?.id ? '¡Tú!' : 'Rival'}`;
+      bar.classList.add('status-checkmate');
+    } else if (s === 'draw') {
+      bar.textContent = '🤝 Partida en tablas';
+      bar.classList.add('status-draw');
+    } else if (s === 'check') {
+      bar.textContent = `⚠️ Jaque — turno de ${turn === 'white' ? whiteName : blackName}`;
+      bar.classList.add('status-check');
+    } else if (s === 'paused') {
+      bar.textContent = '⏸ Partida pausada';
+    } else {
+      bar.textContent = `Turno de ${turn === 'white' ? '♔ ' + whiteName : '♚ ' + blackName}`;
+    }
+
+    // Turn dots
+    const myTurn = (myColor === turn) && ['active','check'].includes(s);
+    document.getElementById('myDot').style.display       = myTurn ? '' : 'none';
+    document.getElementById('opponentDot').style.display = (!myTurn && ['active','check'].includes(s)) ? '' : 'none';
+
+    // Opponent name
+    const oppName = myColor === 'white' ? blackName : whiteName;
+    document.getElementById('opponentName').textContent = oppName;
+    document.getElementById('myName').textContent =
+      myColor === 'spectator' ? 'Espectador' :
+      myColor === 'white' ? whiteName : blackName;
+  }
+
+  // ── Move history rendering ────────────────────────────────────
+  function renderMoveHistory(moves) {
+    const tbody = document.getElementById('moveTbody');
+    tbody.innerHTML = '';
+    const pairs = [];
+    moves.forEach(m => {
+      const idx = Math.ceil(m.move_number / 2) - 1;
+      if (!pairs[idx]) pairs[idx] = { num: Math.ceil(m.move_number / 2) };
+      if (m.move_number % 2 === 1) pairs[idx].white = m.move_san;
+      else pairs[idx].black = m.move_san;
+    });
+    pairs.forEach((p, i) => {
+      const tr = document.createElement('tr');
+      if (i === pairs.length - 1) tr.className = 'last-move';
+      tr.innerHTML = `<td class="move-num">${p.num}.</td>
+        <td class="move-white">${p.white || ''}</td>
+        <td class="move-black">${p.black || ''}</td>`;
+      tbody.appendChild(tr);
+    });
+    const hist = document.getElementById('moveHistory');
+    hist.scrollTop = hist.scrollHeight;
+  }
+
+  function appendMoveRow(move) {
+    const tbody = document.getElementById('moveTbody');
+    // Remove last-move highlight
+    tbody.querySelectorAll('.last-move').forEach(r => r.classList.remove('last-move'));
+
+    const idx = Math.ceil(move.move_number / 2) - 1;
+    let tr = tbody.rows[idx];
+    if (!tr) {
+      tr = tbody.insertRow();
+      tr.innerHTML = `<td class="move-num">${Math.ceil(move.move_number / 2)}.</td>
+        <td class="move-white"></td><td class="move-black"></td>`;
+    }
+    if (move.move_number % 2 === 1) tr.cells[1].textContent = move.move_san;
+    else tr.cells[2].textContent = move.move_san;
+    tr.className = 'last-move';
+  }
+
+  // ── Action buttons ────────────────────────────────────────────
+  document.getElementById('btnInvite').addEventListener('click', async () => {
+    if (!gameData) return;
+    const url = `${location.origin}/game.html?id=${GAME_ID}`;
+    await copyToClipboard(url);
+    toast('¡Enlace copiado!', 'success');
+  });
+
+  document.getElementById('btnPause').addEventListener('click', async () => {
+    const newStatus = gameData.status === 'paused' ? 'active' : 'paused';
+    await sb.from('games').update({ status: newStatus }).eq('id', GAME_ID);
+    document.getElementById('btnPause').textContent = newStatus === 'paused' ? '▶ Reanudar' : '⏸ Pausar';
+    toast(newStatus === 'paused' ? 'Partida pausada' : 'Partida reanudada', 'info');
+  });
+
+  document.getElementById('btnResign').addEventListener('click', async () => {
+    if (!confirm('¿Seguro que quieres rendirte?')) return;
+    const winnerId = myColor === 'white' ? gameData.black?.id : gameData.white?.id;
+    await sb.from('games').update({ status: 'checkmate', winner_id: winnerId }).eq('id', GAME_ID);
+    toast('Te has rendido.', 'info');
+  });
+
+  init();
+</script>
+</body>
+</html>
