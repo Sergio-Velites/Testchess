@@ -69,8 +69,8 @@ En **Authentication → URL Configuration**:
 Abre `public/js/supabase-client.js` y reemplaza:
 
 ```js
-const SUPABASE_URL      = 'https://TU_PROYECTO.supabase.co';
-const SUPABASE_ANON_KEY = 'TU_ANON_KEY';
+// Ya configurado — URL: https://bouwyielngvqltusosle.supabase.co
+// Anon key incluida en el archivo
 ```
 
 > Alternativa: define `window.ENV_SUPABASE_URL` y `window.ENV_SUPABASE_ANON_KEY`
@@ -100,7 +100,7 @@ En **Settings → Environment Variables** añade:
 
 | Variable | Valor |
 |----------|-------|
-| `SUPABASE_URL` | `https://tu-proyecto.supabase.co` |
+| `SUPABASE_URL` | `https://bouwyielngvqltusosle.supabase.co` |
 | `SUPABASE_SERVICE_ROLE_KEY` | Tu service role key |
 
 > Las claves del frontend (`ANON_KEY`, `URL`) van directamente en
